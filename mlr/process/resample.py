@@ -99,14 +99,13 @@ def fourier_downsample_batch(img, target_shape, backend="fftw", axes=None):
     k_img = np.roll(k_img, axis=axes, shift=(ts[0]//2, ts[1]//2))
 
     # get set difference of axes to create proper slicing for arbitrary data ordering
-    slice_ranges = (slice(0,ts[0]), slice(0, ts[1]), slice(0, None))
-    ind_axes = (*axes, tuple({0,1,2}.difference(axes))[0])
-    ind = tuple([slice_ranges[x] for x in ind_axes])
 
-    ind = 
-    print(ind_axes)
-    print(axes)
-    print(ind)
+    ind_axes = (*axes, tuple({0,1,2}.difference(axes))[0])
+    ind = [0, 0, 0]
+    ind[ind_axes[0]] = slice(0, ts[0])
+    ind[ind_axes[1]] = slice(0, ts[1])
+    ind[ind_axes[2]] = slice(0, None)
+    ind = tuple(ind)
 
     # fourier transform cropped region
     if backend=="cupy":
@@ -117,8 +116,6 @@ def fourier_downsample_batch(img, target_shape, backend="fftw", axes=None):
         r_img = np.fft.ifft2(k_img[ind], axes=axes)
 
     # renormalize
-    print(ts[0], os[axes[0]])
-    print(ts[1], os[axes[1]])
     r_img *= (ts[0]/os[axes[0]])*(ts[1]/os[axes[1]])
     r_img = np.abs(r_img).astype(dtype)
     
