@@ -7,6 +7,7 @@ import numpy as np
 
 from .hilbert import hilbert_sort_3D_unrolled_fixed_iter
 from .voxel_grid import get_voxel_grid
+from ttt.timers import ScopedTimer
 
 """
 For searching clusters with sparse graphs, need to store vector-valued elements in sparse matrix; or, sparse tensors
@@ -94,72 +95,76 @@ def neighbors_in_radius(idx, vidx, pos, voxel_n, voxel_s, r_c):
 
     return nn_v
 
-def test():
+def test(r_e=3.0, radius=30):
     from czone.generator import AmorphousGenerator
     from czone.volume import Volume, Sphere
 
     seed = 23
     rng = np.random.default_rng(seed=seed)
 
-    a_gen = AmorphousGenerator()
-    a_sphere = Volume(alg_objects=[Sphere(center=np.array([0,0,0]), radius=30)],
-                      generator=a_gen)
+    with ScopedTimer('Generating and sorting atoms'):
+        a_gen = AmorphousGenerator()
+        a_sphere = Volume(alg_objects=[Sphere(center=np.array([0,0,0]), radius=radius)],
+                        generator=a_gen)
 
-    a_sphere.populate_atoms()
+        a_sphere.populate_atoms()
 
-    atoms = np.copy(a_sphere.atoms)
-    N_atoms = atoms.shape[0]
-    ### Shift and scale to unit cube
-    s_atoms = atoms - np.min(atoms, axis=0)
-    ss_atoms = s_atoms/np.max(atoms, axis=0)
+        atoms = np.copy(a_sphere.atoms)
+        N_atoms = atoms.shape[0]
+        ### Shift and scale to unit cube
+        s_atoms = atoms - np.min(atoms, axis=0)
+        ss_atoms = s_atoms/np.max(atoms, axis=0)
 
-    ### Get a Hilbert index for every point and sort the 
-    N_iter = 6 # corresponds to a precision of 3.8e-6 in the unit cube
-    h_idx = hilbert_sort_3D_unrolled_fixed_iter(ss_atoms, N_iter, return_hidx=True)
+        ### Get a Hilbert index for every point and sort the 
+        N_iter = 6 # corresponds to a precision of 3.8e-6 in the unit cube
+        h_idx = hilbert_sort_3D_unrolled_fixed_iter(ss_atoms, N_iter, return_hidx=True)
 
-    # sort atoms and the hilbert indices
-    h_order = np.argsort(h_idx)
-    # s_atoms = s_atoms[h_order, :]
-    h_idx = h_idx[h_order]
+        # sort atoms and the hilbert indices
+        h_order = np.argsort(h_idx)
+        s_atoms = s_atoms[h_order, :]
+        h_idx = h_idx[h_order]
+
+    print(atoms.shape)
 
     ### Set up a voxel grid for the system
-    r_e = 3.0
-    bounds = np.ceil(np.max(atoms, axis=0)-np.min(atoms,axis=0))
-    N_cells = [int(np.floor(b/r_e)) for b in bounds] # floor, want the boxes to be at least r_e big
+    with ScopedTimer('Setting up voxel grid'):
+        bounds = np.ceil(np.max(atoms, axis=0)-np.min(atoms,axis=0))
+        N_cells = [int(np.floor(b/r_e)) for b in bounds] # floor, want the boxes to be at least r_e big
 
-    r_c = [bounds[i]/N for i, N in enumerate(N_cells)]
+        r_c = [bounds[i]/N for i, N in enumerate(N_cells)]
 
-    voxels = get_voxel_grid(N_cells, False, False, False) # no periodic boundaries
+        voxels = get_voxel_grid(N_cells, False, False, False) # no periodic boundaries
 
-    g_z, g_y, g_x = np.meshgrid(np.linspace(0, 1, N_cells[2], endpoint=False) + 1.0/(2*N_cells[0]), # probably better to have different method for odd/even grids
-                                np.linspace(0, 1, N_cells[1], endpoint=False) + 1.0/(2*N_cells[1]),
-                                np.linspace(0, 1, N_cells[0], endpoint=False) + 1.0/(2*N_cells[2]),
-                                )
+        g_z, g_y, g_x = np(np.linspace(0, 1, N_cells[2], endpoint=False) + 1.0/(2*N_cells[0]), # probably better to have different method for odd/even grids
+                                    np.linspace(0, 1, N_cells[1], endpoint=False) + 1.0/(2*N_cells[1]),
+                                    np.linspace(0, 1, N_cells[0], endpoint=False) + 1.0/(2*N_cells[2]),
+                                    )
 
-    voxel_centers = np.hstack([g_x.ravel()[:,None], g_y.ravel()[:,None], g_z.ravel()[:,None]])
+        voxel_centers = np.hstack([g_x.ravel()[:,None], g_y.ravel()[:,None], g_z.ravel()[:,None]])
 
     # sort voxels by hilbert order, too
-    h_idx_voxels = hilbert_sort_3D_unrolled_fixed_iter(voxel_centers, 3, return_hidx=True)
-    h_order_voxels = np.argsort(h_idx_voxels).astype(int)
-    new_order = np.argsort(h_order_voxels).astype(int)
+        h_idx_voxels = hilbert_sort_3D_unrolled_fixed_iter(voxel_centers, 3, return_hidx=True)
+        h_order_voxels = np.argsort(h_idx_voxels).astype(int)
+        new_order = np.argsort(h_order_voxels).astype(int)
 
-    h_voxels = remap_voxels(voxels, new_order, h_order_voxels)
-    h_vc = voxel_centers[h_order_voxels,:]
-    h_idx_voxels = h_idx_voxels[h_order_voxels]
+        h_voxels = remap_voxels(voxels, new_order, h_order_voxels)
+        h_vc = voxel_centers[h_order_voxels,:]
+        h_idx_voxels = h_idx_voxels[h_order_voxels]
 
     # place atoms into voxels
     # should divide number line into equal partitions
 
     ## sort method 2: modulus based indexing with conversions
-    voxel_sets = [set([]) for i in range(len(h_voxels))]
-    voxel_indices = np.zeros(N_atoms, dtype=int)
-    for i, p in enumerate(s_atoms):
-        j_g = N_cells[0]*N_cells[1]*(int(p[2]//r_c[2])) \
-            + N_cells[0]*(int(p[1]//r_c[1])) \
-            + int(p[0]//r_c[0])
-        j_h = new_order[j_g]
-        voxel_indices[i] = j_h
-        voxel_sets[j_h].update([i])
+    with ScopedTimer('Assigning atoms to voxels'):
+        voxel_sets = [set([]) for i in range(len(h_voxels))]
+        voxel_indices = np.zeros(N_atoms, dtype=int)
+        for i, p in enumerate(s_atoms):
+            j_g = N_cells[0]*N_cells[1]*(int(p[2]//r_c[2])) \
+                + N_cells[0]*(int(p[1]//r_c[1])) \
+                + int(p[0]//r_c[0])
+            j_h = new_order[j_g]
+            voxel_indices[i] = j_h
+            voxel_sets[j_h].update([i])
 
     """
     # is there a way to do this so that atoms are placed by voxel, i.e., by iterating over the hilbert indices instead?
@@ -276,28 +281,29 @@ def test():
     """
 
     ### Form the graphs as matrices
-    A_all = np.zeros((5, N_atoms, N_atoms))
-    A = np.zeros((N_atoms, N_atoms), dtype=int)
-    for i in range(N_atoms):
-        nn = neighbors_in_radius(i, voxel_indices[i], s_atoms, h_voxels, voxel_sets, r_e)
+    with ScopedTimer('Creating atomic graph'):
+        # A_all = np.zeros((5, N_atoms, N_atoms))
+        # A = np.zeros((N_atoms, N_atoms), dtype=int)
+        for i in range(N_atoms):
+            nn = neighbors_in_radius(i, voxel_indices[i], s_atoms, h_voxels, voxel_sets, r_e)
 
-        for j in nn:
-            r_ij = s_atoms[i, :] - s_atoms[j, :]
-            A_all[:,i,j] = np.array([1.0, np.linalg.norm(r_ij), r_ij[0], r_ij[1], r_ij[2]])
-            A[i,j] = 1
-            A[j,i] = 1
+            # for j in nn:
+            #     r_ij = s_atoms[i, :] - s_atoms[j, :]
+            #     A_all[:,i,j] = np.array([1.0, np.linalg.norm(r_ij), r_ij[0], r_ij[1], r_ij[2]])
+            #     A[i,j] = 1
+            #     A[j,i] = 1
 
-    # A_all[:2,:,:] = A_all[:2,:,:] + np.transpose(A_all[:2,:,:], axes=(0, 2, 1))
-    di = np.diag_indices(N_atoms)
-    A_all[:2,di[0], di[1]] = 0
+        # A_all[:2,:,:] = A_all[:2,:,:] + np.transpose(A_all[:2,:,:], axes=(0, 2, 1))
+        # di = np.diag_indices(N_atoms)
+        # A_all[:2,di[0], di[1]] = 0
 
-    A[di] = 0
+        # A[di] = 0
 
     # A_0 and A_1 should be real, symnmetric
     # A_2, A_3, A_4 should be real, skew-symmetric
     # All should have no self connections, so diagonals should be zero (implicit for A_2, A_3, and A_4)
 
-    return A, A_all
+    # return A, A_all
 
 
 if __name__ == "__main__":
