@@ -49,7 +49,7 @@ def hilbert_sort_3D_unrolled(points, eps_0=1e-4, return_hidx=False, return_point
 
     i = 0
     while(eps <= 1):
-        hilbert_index_3D_state_loop(x_arr, y_arr, h_arr, dfact)
+        hilbert_index_3D_state_loop(x_arr, y_arr, z_arr, h_arr, dfact)
         dfact *= 0.125
         eps *= 8.0
         i += 1
