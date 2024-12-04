@@ -36,7 +36,9 @@ def write_dataset_to_h5(fp, arr, dataset_key, chunks=True, **kwargs):
 def write_sd_to_h5(outfile, state_dict):
     for param_name, tensor in state_dict.items():
         temp = tensor.to("cpu")
-        write_dataset_to_h5(outfile, temp.numpy(), param_name, track_order=True)
+        write_dataset_to_h5(
+            outfile, temp.numpy(), param_name, track_order=True
+        )
 
 
 def read_sd_from_h5(infile):
@@ -46,3 +48,8 @@ def read_sd_from_h5(infile):
             out_dict[k] = torch.from_numpy(np.copy(f[k]))
 
     return out_dict
+
+def write_eigenpair_to_h5(outfile, evec_dict, eigenvalue):
+    write_sd_to_h5(outfile, evec_dict)
+    with h5py.File(outfile, mode='a') as f:
+        f['/'].attrs['eigenvalue'] = eigenvalue
