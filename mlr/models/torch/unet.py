@@ -1,5 +1,11 @@
+from abc import ABC, abstractmethod
+
 import torch
 from torch import nn
+
+from mlr.models.torch.layers import OrthogonalLazyLinear
+from mlr.models.torch.mlp import classifier
+
 
 
 class ResidualBlock(nn.Module):
@@ -358,10 +364,11 @@ class UNet_v2(nn.Module):
         self.ups = nn.ModuleList([UpsampleBlock(**c) for c in decoder_configs])
 
         ## final decoder block
-        # self.final_decoder = UpsampleBlock(udict[num_blocks - 1], **final_config)
         self.final_decoder = UpsampleBlock(**final_config)
         self.final_conv = nn.Conv2d(**final_conv_config)
         self.softmax = nn.Softmax(1)
+
+        ## TODO: init final conv block
 
     def forward(self, x):
         skips = {}  # empty map to store skip connections
@@ -386,11 +393,126 @@ class UNet_v2(nn.Module):
         return out
 
 
-# # Specify model parameters
-# num_blocks = 3
-# filter_sequence = [4, 8, 16, 32, 64, 128, 256, 512]
-# pool_sequence = [
-#     2,
-#     2,
-#     2,
-# ]  # Sets the max pooling kernel size. The length of this list has to be equal to num_blocks
+class BaseProjector(nn.Module, ABC):
+    def __init__(
+        self,
+        num_blocks,
+        initial_config,
+        initial_pool_config,
+        encoder_configs,
+        mlp_config,
+    ):
+        nn.Module.__init__(self)
+        self.num_blocks = num_blocks
+        self.initial_block = InitialBlock(**initial_config)
+        self.pool = nn.MaxPool2d(**initial_pool_config)
+
+        # creates encoder blocks
+        self.downs = nn.ModuleList([DoubleResidualBlock(**c) for c in encoder_configs])
+
+        self.mlp = classifier(**mlp_config)
+        self.orth_projection = OrthogonalLazyLinear(self.mlp.input_shape, bias=False, requires_grad=False)
+
+    @abstractmethod
+    def project(self, x):
+        pass
+
+    def get_latent_features(self, x):
+        x = self.project(x)
+
+    def get_latent_features_from_projections(self, x):
+        return self.mlp(x)
+
+    def forward(self, x):
+        x = self.project(x)
+        return self.mlp(x)
+
+class BottleneckProjector_UNet(BaseProjector, nn.Module):
+    """
+    Di -> concatenate -> OrthogonalProjection -> MLP
+    D0 -> ^
+    D1 -> ^
+    D2 -> ^
+       D3
+    """
+    def __init__(
+        self,
+        num_blocks,
+        initial_config,
+        initial_pool_config,
+        encoder_configs,
+        mlp_config,
+    ):
+        super().__init__(num_blocks, initial_config, initial_pool_config, encoder_configs, mlp_config)
+        self.final_pool = nn.AvgPool2d(8)
+
+    def project(self, x):
+        skips = {}  # empty map to store skip connections
+
+        # process initial block and pool
+        x = self.initial_block(x)
+        skips[self.num_blocks - 1] = x
+        x = self.pool(x)
+
+        # process encoding blocks
+        for i in range(self.num_blocks):
+            x = self.downs[i](x)
+            if i < self.num_blocks - 1:
+                skips[self.num_blocks - i - 2] = x
+
+        # reduce size of model with some last pooling
+        for k in skips:
+            skips[k] = self.final_pool(skips[k])
+        x = self.final_pool(x)
+
+        x = torch.concatenate([x.flatten(start_dim=1)] + [v.flatten(start_dim=1) for v in skips.values()], dim=1)
+        x = self.orth_projection(x)
+        return x
+
+
+class TailProjector_UNet(BaseProjector):
+    """
+    Di -> U3 -> Reduction + OrthogonalProjection -> MLP
+    D0 -> U2
+    D1 -> U1
+    D2 -> U0
+       D3
+    """
+
+    def __init__(
+        self,
+        num_blocks,
+        initial_config,
+        initial_pool_config,
+        encoder_configs,
+        decoder_configs,
+        mlp_config,
+        pool=True,
+    ):
+        super().__init__(num_blocks, initial_config, initial_pool_config, encoder_configs, mlp_config)
+        ## creates decoder blocks
+        self.ups = nn.ModuleList([UpsampleBlock(**c) for c in decoder_configs])
+        self.final_pool = nn.AvgPool2d(8)
+        
+
+    def project(self, x):
+        skips = {}  # empty map to store skip connections
+
+        # process initial block and pool
+        x = self.initial_block(x)
+        skips[self.num_blocks - 1] = x
+        x = self.pool(x)
+
+        # process encoding blocks
+        for i in range(self.num_blocks):
+            x = self.downs[i](x)
+            if i < self.num_blocks - 1:
+                skips[self.num_blocks - i - 2] = x
+
+        for i in range(self.num_blocks):
+            x = self.ups[i](x, skips[i])
+
+        x = self.final_pool(x)
+        x = x.flatten(start_dim=1)
+        x = self.orth_projection(x)
+        return x
