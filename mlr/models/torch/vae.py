@@ -16,9 +16,9 @@ class fixed_width_mlp_Encoder(nn.Module):
 
         self.layers.extend([nn.Linear(hidden_dim, latent_dim), nn.ReLU()])
 
-        # for m in self.modules():
-        #     if isinstance(m, nn.Linear):
-        #         nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
 
     def forward(self, x):
         for layer in self.layers:
@@ -45,21 +45,20 @@ class fixed_width_mlp_Decoder(nn.Module):
 
         self.layers.extend([nn.Linear(hidden_dim, data_dim)])
 
-        # for m in self.modules():
-        #     if isinstance(m, nn.Linear):
-        #         nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+        for m in self.modules():
+            if isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
 
     def forward(self, x):
         for layer in self.layers:
             x = layer(x)
 
-        # res = 3 * torch.nn.functional.tanh(x)
-        return x
+        return 3*x
 
 
 class VAE(nn.Module):
     def __init__(
-        self,
+        self,  
         data_dim=128**2,
         latent_dim=200,
         gaussian_dim=2,
@@ -77,6 +76,8 @@ class VAE(nn.Module):
         # latent mean and variance
         self.mean_layer = nn.Linear(latent_dim, gaussian_dim)
         self.logvar_layer = nn.Linear(latent_dim, gaussian_dim)
+
+        nn.init.kaiming_normal_(self.mean_layer.weight)
 
         if add_sigmoid:
             self.decoder.layers.append(nn.Sigmoid())
@@ -106,6 +107,14 @@ class VAE(nn.Module):
         KLD = -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())
 
         return reproduction_loss + KLD
+    
+    @staticmethod
+    def kl_divergence(mean, log_var):
+        return -0.5 * torch.sum(1 + log_var - mean.pow(2) - log_var.exp())/mean.shape[0]
+
+    @staticmethod
+    def reproduction_loss(x, x_hat):
+        return nn.functional.mse_loss(x_hat, x, reduction="mean")
 
     @classmethod
     def load_ray_result(cls, folder, input_dim=256**2, add_sigmoid=False):
